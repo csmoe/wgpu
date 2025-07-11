@@ -1,8 +1,9 @@
 use metal::{
     MTLArgumentBuffersTier, MTLCounterSamplingPoint, MTLFeatureSet, MTLGPUFamily,
-    MTLLanguageVersion, MTLPixelFormat, MTLReadWriteTextureTier, NSInteger,
+    MTLLanguageVersion, MTLPixelFormat, MTLReadWriteTextureTier,
 };
-use objc::{class, msg_send, sel, sel_impl};
+use objc::{class, msg_send};
+use objc2_foundation::NSInteger;
 use parking_lot::Mutex;
 use wgt::{AstcBlock, AstcChannel};
 
@@ -129,7 +130,7 @@ impl crate::Adapter for super::Adapter {
             ],
         );
 
-        let image_atomic_if = if pc.msl_version >= MTLLanguageVersion::V3_1 {
+        let image_atomic_if = if pc.msl_version >= MTLLanguageVersion::Version3_1 {
             Tfc::STORAGE_ATOMIC
         } else {
             Tfc::empty()
@@ -514,7 +515,7 @@ const DEPTH_CLIP_MODE: &[MTLFeatureSet] = &[
 const OS_NOT_SUPPORT: (usize, usize) = (10000, 0);
 
 impl super::PrivateCapabilities {
-    fn supports_any(raw: &metal::DeviceRef, features_sets: &[MTLFeatureSet]) -> bool {
+    fn supports_any(raw: &metal::MTLDevice, features_sets: &[MTLFeatureSet]) -> bool {
         features_sets
             .iter()
             .cloned()
@@ -609,25 +610,25 @@ impl super::PrivateCapabilities {
         Self {
             family_check,
             msl_version: if os_is_xr || version.at_least((14, 0), (17, 0), os_is_mac) {
-                MTLLanguageVersion::V3_1
+                MTLLanguageVersion::Version3_1
             } else if version.at_least((13, 0), (16, 0), os_is_mac) {
-                MTLLanguageVersion::V3_0
+                MTLLanguageVersion::Version3_0
             } else if version.at_least((12, 0), (15, 0), os_is_mac) {
-                MTLLanguageVersion::V2_4
+                MTLLanguageVersion::Version2_4
             } else if version.at_least((11, 0), (14, 0), os_is_mac) {
-                MTLLanguageVersion::V2_3
+                MTLLanguageVersion::Version2_3
             } else if version.at_least((10, 15), (13, 0), os_is_mac) {
-                MTLLanguageVersion::V2_2
+                MTLLanguageVersion::Version2_2
             } else if version.at_least((10, 14), (12, 0), os_is_mac) {
-                MTLLanguageVersion::V2_1
+                MTLLanguageVersion::Version2_1
             } else if version.at_least((10, 13), (11, 0), os_is_mac) {
-                MTLLanguageVersion::V2_0
+                MTLLanguageVersion::Version2_0
             } else if version.at_least((10, 12), (10, 0), os_is_mac) {
-                MTLLanguageVersion::V1_2
+                MTLLanguageVersion::Version1_2
             } else if version.at_least((10, 11), (9, 0), os_is_mac) {
-                MTLLanguageVersion::V1_1
+                MTLLanguageVersion::Version1_1
             } else {
-                MTLLanguageVersion::V1_0
+                MTLLanguageVersion::Version1_0
             },
             // macOS 10.11 doesn't support read-write resources
             fragment_rw_storage: version.at_least((10, 12), (8, 0), os_is_mac),
@@ -945,7 +946,7 @@ impl super::PrivateCapabilities {
         );
         features.set(
             F::DUAL_SOURCE_BLENDING,
-            self.msl_version >= MTLLanguageVersion::V1_2 && self.dual_source_blending,
+            self.msl_version >= MTLLanguageVersion::Version1_2 && self.dual_source_blending,
         );
         features.set(F::TEXTURE_COMPRESSION_ASTC, self.format_astc);
         features.set(F::TEXTURE_COMPRESSION_ASTC_HDR, self.format_astc_hdr);
@@ -965,29 +966,29 @@ impl super::PrivateCapabilities {
                 | F::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
                 | F::STORAGE_TEXTURE_ARRAY_NON_UNIFORM_INDEXING
                 | F::PARTIALLY_BOUND_BINDING_ARRAY,
-            self.msl_version >= MTLLanguageVersion::V3_0
+            self.msl_version >= MTLLanguageVersion::Version3_0
                 && self.supports_arrays_of_textures
-                && self.argument_buffers as u64 >= MTLArgumentBuffersTier::Tier2 as u64,
+                && self.argument_buffers >= MTLArgumentBuffersTier::Tier2,
         );
         features.set(
             F::SHADER_INT64,
-            self.int64 && self.msl_version >= MTLLanguageVersion::V2_3,
+            self.int64 && self.msl_version >= MTLLanguageVersion::Version2_3,
         );
         features.set(
             F::SHADER_INT64_ATOMIC_MIN_MAX,
-            self.int64_atomics && self.msl_version >= MTLLanguageVersion::V2_4,
+            self.int64_atomics && self.msl_version >= MTLLanguageVersion::Version2_4,
         );
         features.set(
             F::TEXTURE_INT64_ATOMIC,
-            self.int64_atomics && self.msl_version >= MTLLanguageVersion::V3_1,
+            self.int64_atomics && self.msl_version >= MTLLanguageVersion::Version3_1,
         );
         features.set(
             F::TEXTURE_ATOMIC,
-            self.msl_version >= MTLLanguageVersion::V3_1,
+            self.msl_version >= MTLLanguageVersion::Version3_1,
         );
         features.set(
             F::SHADER_FLOAT32_ATOMIC,
-            self.float_atomics && self.msl_version >= MTLLanguageVersion::V3_0,
+            self.float_atomics && self.msl_version >= MTLLanguageVersion::Version3_0,
         );
 
         features.set(
@@ -1273,7 +1274,7 @@ impl super::PrivateCapabilities {
 }
 
 impl super::PrivateDisabilities {
-    pub fn new(device: &metal::Device) -> Self {
+    pub fn new(device: &metal::MTLDevice) -> Self {
         let is_intel = device.name().starts_with("Intel");
         Self {
             broken_viewport_near_depth: is_intel

@@ -33,10 +33,10 @@ use arrayvec::ArrayVec;
 use bitflags::bitflags;
 use hashbrown::HashMap;
 use metal::{
-    foreign_types::ForeignTypeRef as _, MTLArgumentBuffersTier, MTLBuffer, MTLCommandBufferStatus,
-    MTLCullMode, MTLDepthClipMode, MTLIndexType, MTLLanguageVersion, MTLPrimitiveType,
-    MTLReadWriteTextureTier, MTLRenderStages, MTLResource, MTLResourceUsage, MTLSamplerState,
-    MTLSize, MTLTexture, MTLTextureType, MTLTriangleFillMode, MTLWinding,
+    MTLArgumentBuffersTier, MTLBuffer, MTLCommandBufferStatus, MTLCullMode, MTLDepthClipMode,
+    MTLIndexType, MTLLanguageVersion, MTLPrimitiveType, MTLReadWriteTextureTier, MTLRenderStages,
+    MTLResource, MTLResourceUsage, MTLSamplerState, MTLSize, MTLTexture, MTLTextureType,
+    MTLTriangleFillMode, MTLWinding,
 };
 use naga::FastHashMap;
 use parking_lot::{Mutex, RwLock};
@@ -103,7 +103,7 @@ crate::impl_dyn_resource!(
 pub struct Instance {}
 
 impl Instance {
-    pub fn create_surface_from_layer(&self, layer: &metal::MetalLayerRef) -> Surface {
+    pub fn create_surface_from_layer(&self, layer: &metal::MTLMetalLayerRef) -> Surface {
         unsafe { Surface::from_layer(layer) }
     }
 }

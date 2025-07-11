@@ -7,8 +7,9 @@ use alloc::{
 use core::ops::Range;
 use metal::{
     MTLIndexType, MTLLoadAction, MTLPrimitiveType, MTLScissorRect, MTLSize, MTLStoreAction,
-    MTLViewport, MTLVisibilityResultMode, NSRange,
+    MTLViewport, MTLVisibilityResultMode,
 };
+use objc2_foundation::NSRange;
 
 // has to match `Temp::binding_sizes`
 const WORD_SIZE: usize = 4;
@@ -21,7 +22,11 @@ impl Default for super::CommandState {
             compute: None,
             raw_primitive_type: MTLPrimitiveType::Point,
             index: None,
-            raw_wg_size: MTLSize::new(0, 0, 0),
+            raw_wg_size: MTLSize {
+                width: 0,
+                height: 0,
+                depth: 0,
+            },
             stage_infos: Default::default(),
             storage_buffer_length_map: Default::default(),
             vertex_buffer_size_map: Default::default(),
@@ -33,7 +38,7 @@ impl Default for super::CommandState {
 }
 
 impl super::CommandEncoder {
-    fn enter_blit(&mut self) -> &metal::BlitCommandEncoderRef {
+    fn enter_blit(&mut self) -> &metal::MTLBlitCommandEncoderRef {
         if self.state.blit.is_none() {
             debug_assert!(self.state.render.is_none() && self.state.compute.is_none());
             let cmd_buf = self.raw_cmd_buf.as_ref().unwrap();
@@ -60,8 +65,8 @@ impl super::CommandEncoder {
                 .contains(TimestampQuerySupport::ON_BLIT_ENCODER);
 
             if !self.state.pending_timer_queries.is_empty() && !supports_sample_counters_in_buffer {
-                objc::rc::autoreleasepool(|| {
-                    let descriptor = metal::BlitPassDescriptor::new();
+                objc::rc::autoreleasepool(|_| {
+                    let descriptor = metal::MTLBlitPassDescriptor::new();
                     let mut last_query = None;
                     for (i, (set, index)) in self.state.pending_timer_queries.drain(..).enumerate()
                     {

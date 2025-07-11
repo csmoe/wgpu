@@ -4,16 +4,15 @@ use alloc::borrow::ToOwned as _;
 use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
 
-use core_graphics_types::{
-    base::CGFloat,
-    geometry::{CGRect, CGSize},
-};
-use metal::{foreign_types::ForeignType, MTLTextureType};
+use metal::MTLTextureType;
 use objc::{
     class, msg_send,
     rc::{autoreleasepool, StrongPtr},
     runtime::{Object, BOOL, NO, YES},
     sel, sel_impl,
+};
+use objc2_foundation::{
+    CGFloat, {CGRect, CGSize},
 };
 use parking_lot::{Mutex, RwLock};
 

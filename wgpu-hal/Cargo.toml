@@ -59,7 +59,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 # exclude the Vulkan backend on MacOS unless a separate feature `vulkan-portability` is enabled. In response
 # to these features, it enables features of platform specific crates. For example, the `vulkan` feature in wgpu-core
 # enables the `vulkan` feature in `wgpu-core-deps-windows-linux-android` which in turn enables the
-# `vulkan` feature in `wgpu-hal` _only_ on those platforms. If you enable the `vulkan-portability` feature, it 
+# `vulkan` feature in `wgpu-hal` _only_ on those platforms. If you enable the `vulkan-portability` feature, it
 # will enable the `vulkan` feature in `wgpu-core-deps-apple`. The only way to do this is unfortunately to have
 # a separate crate for each platform category that participates in the feature unification.
 #
@@ -75,7 +75,8 @@ metal = [
     "naga/msl-out",
     "dep:arrayvec",
     "dep:block",
-    "dep:core-graphics-types",
+    "dep:objc2-core-foundation",
+    "dep:objc2-foundation",
     "dep:hashbrown",
     "dep:libc",
     "dep:log",
@@ -275,9 +276,10 @@ mach-dxcompiler-rs = { workspace = true, optional = true }
 [target.'cfg(target_vendor = "apple")'.dependencies]
 # Backend: Metal
 block = { workspace = true, optional = true }
-core-graphics-types = { workspace = true, optional = true }
 metal = { workspace = true, optional = true }
 objc = { workspace = true, optional = true }
+objc2-core-foundation = { workspace = true, optional = true, features = [ "CFCGTypes" ] }
+objc2-foundation = { workspace = true, optional = true }
 
 #########################
 ### Platform: Android ###
