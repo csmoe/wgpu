@@ -26,6 +26,7 @@ impl State {
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
             .unwrap();
+        dbg!(&adapter.get_info());
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default())
             .await

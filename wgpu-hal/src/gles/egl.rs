@@ -17,6 +17,9 @@ const EGL_PLATFORM_X11_KHR: u32 = 0x31D5;
 const EGL_PLATFORM_XCB_EXT: u32 = 0x31DC;
 const EGL_PLATFORM_XCB_SCREEN_EXT: u32 = 0x31DE;
 const EGL_PLATFORM_ANGLE_ANGLE: u32 = 0x3202;
+const EGL_PLATFORM_ANGLE_TYPE_ANGLE: u32 = 0x3203;
+const EGL_D3D_TEXTURE_2D_SHARE_HANDLE_ANGLE: u32 = 0x3200;
+const EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE: u32 = 0x3208;
 const EGL_PLATFORM_ANGLE_NATIVE_PLATFORM_TYPE_ANGLE: u32 = 0x348F;
 const EGL_PLATFORM_ANGLE_DEBUG_LAYERS_ENABLED: u32 = 0x3451;
 const EGL_PLATFORM_SURFACELESS_MESA: u32 = 0x31DD;
@@ -196,6 +199,7 @@ impl EglContext {
 pub struct AdapterContext {
     glow: Mutex<ManuallyDrop<glow::Context>>,
     egl: Option<EglContext>,
+    config: Option<khronos_egl::Config>,
 }
 
 unsafe impl Sync for AdapterContext {}
@@ -218,6 +222,10 @@ impl AdapterContext {
     /// Returns [`None`] if the adapter was externally created.
     pub fn raw_display(&self) -> Option<&khronos_egl::Display> {
         self.egl.as_ref().map(|egl| &egl.display)
+    }
+
+    pub fn egl_config(&self) -> Option<khronos_egl::Config> {
+        self.config
     }
 
     /// Returns the EGL version the adapter context was created with.
@@ -759,6 +767,29 @@ impl crate::Instance for Instance {
         let egl1_5: Option<&Arc<EglInstance>> = Some(&egl);
 
         let (display, wsi_kind) = match (desc.display.map(|d| d.as_raw()), egl1_5) {
+            (Some(Rdh::Windows(_)) | None, Some(egl))
+                if cfg!(windows)
+                    && client_ext_str.contains("EGL_ANGLE_platform_angle")
+                    && client_ext_str.contains("EGL_ANGLE_platform_angle_d3d") =>
+            {
+                log::debug!("Using Angle platform with D3D11");
+                let display_attributes = [
+                    EGL_PLATFORM_ANGLE_TYPE_ANGLE as khronos_egl::Attrib,
+                    EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE as khronos_egl::Attrib,
+                    EGL_PLATFORM_ANGLE_DEBUG_LAYERS_ENABLED as khronos_egl::Attrib,
+                    usize::from(desc.flags.contains(wgt::InstanceFlags::VALIDATION)),
+                    khronos_egl::ATTRIB_NONE,
+                ];
+                let display = unsafe {
+                    egl.get_platform_display(
+                        EGL_PLATFORM_ANGLE_ANGLE,
+                        khronos_egl::DEFAULT_DISPLAY,
+                        &display_attributes,
+                    )
+                }
+                .map_err(instance_err("failed to get Angle D3D11 display"))?;
+                (display, WindowKind::Unknown)
+            }
             (Some(Rdh::Wayland(wayland_display_handle)), Some(egl))
                 if client_ext_str.contains("EGL_EXT_platform_wayland") =>
             {
@@ -1025,6 +1056,7 @@ impl crate::Instance for Instance {
                     glow: Mutex::new(gl),
                     // ERROR: Copying owned reference handles here, be careful to not drop them!
                     egl: Some(inner.egl.clone()),
+                    config: Some(inner.config),
                 },
                 self.options.clone(),
             )
@@ -1054,6 +1086,7 @@ impl super::Adapter {
                 AdapterContext {
                     glow: Mutex::new(ManuallyDrop::new(context)),
                     egl: None,
+                    config: None,
                 },
                 options,
             )
@@ -1070,12 +1103,171 @@ impl super::Device {
     pub fn context(&self) -> &AdapterContext {
         &self.shared.context
     }
+
+    /// # Safety
+    ///
+    /// - Requires ANGLE/EGL on Windows with `EGL_ANGLE_d3d_share_handle_client_buffer`
+    /// - The `d3d11_shared_handle` must remain valid until the returned texture is dropped
+    /// - `desc` must describe a 2D, single-layer, single-mip, non-multisampled color texture
+    #[cfg(windows)]
+    pub unsafe fn texture_from_d3d11_shared_handle(
+        &self,
+        d3d11_shared_handle: windows::Win32::Foundation::HANDLE,
+        desc: &crate::TextureDescriptor,
+    ) -> Result<super::Texture, crate::DeviceError> {
+        if desc.dimension != wgt::TextureDimension::D2
+            || desc.size.depth_or_array_layers != 1
+            || desc.mip_level_count != 1
+            || desc.sample_count != 1
+            || !desc.view_formats.is_empty()
+        {
+            log::error!(
+                "D3D11 shared-handle import only supports 2D, single-layer, single-mip, single-sample textures without view formats"
+            );
+            return Err(crate::DeviceError::Unexpected);
+        }
+
+        let target = super::Texture::get_info_from_desc(desc);
+        if target != glow::TEXTURE_2D {
+            log::error!("D3D11 shared-handle import only supports 2D textures");
+            return Err(crate::DeviceError::Unexpected);
+        }
+
+        let texture_format = match desc.format {
+            wgt::TextureFormat::Rgba8Unorm
+            | wgt::TextureFormat::Rgba8UnormSrgb
+            | wgt::TextureFormat::Bgra8Unorm
+            | wgt::TextureFormat::Bgra8UnormSrgb => khronos_egl::TEXTURE_RGBA,
+            _ => {
+                log::error!(
+                    "D3D11 shared-handle import does not support texture format {:?}",
+                    desc.format
+                );
+                return Err(crate::DeviceError::Unexpected);
+            }
+        };
+
+        let egl = self.shared.context.egl_instance().cloned().ok_or_else(|| {
+            log::error!("D3D11 shared-handle import requires an EGL-backed GL context");
+            crate::DeviceError::Unexpected
+        })?;
+        let display = self.shared.context.raw_display().copied().ok_or_else(|| {
+            log::error!("D3D11 shared-handle import requires an EGL display");
+            crate::DeviceError::Unexpected
+        })?;
+        let config = self.shared.context.egl_config().ok_or_else(|| {
+            log::error!("D3D11 shared-handle import requires an EGL config");
+            crate::DeviceError::Unexpected
+        })?;
+
+        let display_extensions = egl
+            .query_string(Some(display), khronos_egl::EXTENSIONS)
+            .map_err(|e| {
+                log::error!("failed to query EGL display extensions: {e:?}");
+                crate::DeviceError::Unexpected
+            })?
+            .to_string_lossy()
+            .into_owned();
+        if !display_extensions.contains("EGL_ANGLE_d3d_share_handle_client_buffer") {
+            log::error!("ANGLE display does not support EGL_ANGLE_d3d_share_handle_client_buffer");
+            return Err(crate::DeviceError::Unexpected);
+        }
+
+        let attributes = [
+            khronos_egl::WIDTH,
+            desc.size.width as i32,
+            khronos_egl::HEIGHT,
+            desc.size.height as i32,
+            khronos_egl::TEXTURE_TARGET,
+            khronos_egl::TEXTURE_2D,
+            khronos_egl::TEXTURE_FORMAT,
+            texture_format,
+            khronos_egl::NONE,
+        ];
+        let pbuffer = egl
+            .create_pbuffer_from_client_buffer(
+                display,
+                EGL_D3D_TEXTURE_2D_SHARE_HANDLE_ANGLE,
+                unsafe { khronos_egl::ClientBuffer::from_ptr(d3d11_shared_handle.0.cast()) },
+                config,
+                &attributes,
+            )
+            .map_err(|e| {
+                log::error!("failed to create EGL pbuffer from D3D11 shared handle: {e:?}");
+                crate::DeviceError::Unexpected
+            })?;
+
+        let gl = &self.shared.context.lock();
+        let raw = unsafe { gl.create_texture() }.map_err(|error| {
+            log::error!("imported texture creation failed: {error}");
+            crate::DeviceError::OutOfMemory
+        })?;
+        unsafe { gl.bind_texture(target, Some(raw)) };
+
+        match desc.format.sample_type(None, Some(self.shared.features)) {
+            Some(
+                wgt::TextureSampleType::Float { filterable: false }
+                | wgt::TextureSampleType::Uint
+                | wgt::TextureSampleType::Sint,
+            ) => {
+                unsafe {
+                    gl.tex_parameter_i32(target, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32)
+                };
+                unsafe {
+                    gl.tex_parameter_i32(target, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32)
+                };
+            }
+            _ => {}
+        }
+
+        if let Err(e) = egl.bind_tex_image(display, pbuffer, khronos_egl::BACK_BUFFER) {
+            unsafe { gl.bind_texture(target, None) };
+            unsafe { gl.delete_texture(raw) };
+            let _ = egl.destroy_surface(display, pbuffer);
+            log::error!("failed to bind imported EGL pbuffer to GL texture: {e:?}");
+            return Err(crate::DeviceError::Unexpected);
+        }
+
+        if let Some(label) = desc.label {
+            if self
+                .shared
+                .private_caps
+                .contains(super::PrivateCapabilities::DEBUG_FNS)
+            {
+                unsafe { gl.object_label(glow::TEXTURE, raw.0.get(), Some(label)) };
+            }
+        }
+
+        unsafe { gl.bind_texture(target, None) };
+
+        let shared = self.shared.clone();
+        let drop_callback: crate::DropCallback = Box::new(move || {
+            let gl = shared.context.lock();
+            if let Err(e) = egl.release_tex_image(display, pbuffer, khronos_egl::BACK_BUFFER) {
+                log::warn!("failed to release imported EGL texture image: {e:?}");
+            }
+            unsafe { gl.delete_texture(raw) };
+            if let Err(e) = egl.destroy_surface(display, pbuffer) {
+                log::warn!("failed to destroy imported EGL pbuffer: {e:?}");
+            }
+        });
+
+        Ok(super::Texture {
+            inner: super::TextureInner::Texture { raw, target },
+            drop_guard: crate::DropGuard::from_option(Some(drop_callback)),
+            mip_level_count: desc.mip_level_count,
+            array_layer_count: desc.array_layer_count(),
+            format: desc.format,
+            format_desc: self.shared.describe_texture_format(desc.format),
+            copy_size: desc.copy_extent(),
+        })
+    }
 }
 
 #[derive(Debug)]
 pub struct Swapchain {
     surface: khronos_egl::Surface,
-    wl_window: Option<*mut wayland_sys::egl::wl_egl_window>,
+    wl_window: Option<*mut ffi::c_void>,
     framebuffer: glow::Framebuffer,
     renderbuffer: glow::Renderbuffer,
     /// Extent because the window lies
@@ -1183,10 +1375,7 @@ impl Surface {
     unsafe fn unconfigure_impl(
         &self,
         device: &super::Device,
-    ) -> Option<(
-        khronos_egl::Surface,
-        Option<*mut wayland_sys::egl::wl_egl_window>,
-    )> {
+    ) -> Option<(khronos_egl::Surface, Option<*mut ffi::c_void>)> {
         let gl = &device.shared.context.lock();
         match self.swapchain.write().take() {
             Some(sc) => {
@@ -1218,11 +1407,12 @@ impl crate::Surface for Surface {
 
         let (surface, wl_window) = match unsafe { self.unconfigure_impl(device) } {
             Some((sc, wl_window)) => {
+                #[cfg(unix)]
                 if let Some(window) = wl_window {
                     wayland_sys::ffi_dispatch!(
                         wayland_sys::egl::wayland_egl_handle(),
                         wl_egl_window_resize,
-                        window,
+                        window.cast(),
                         config.extent.width as i32,
                         config.extent.height as i32,
                         0,
@@ -1233,7 +1423,10 @@ impl crate::Surface for Surface {
                 (sc, wl_window)
             }
             None => {
+                #[cfg(unix)]
                 let mut wl_window = None;
+                #[cfg(not(unix))]
+                let wl_window = None;
                 let (mut temp_xlib_handle, mut temp_xcb_handle);
                 let native_window_ptr = match (self.wsi.kind, self.raw_window_handle) {
                     (WindowKind::Unknown | WindowKind::X11, Rwh::Xlib(handle)) => {
@@ -1261,7 +1454,7 @@ impl crate::Surface for Surface {
                             config.extent.width as i32,
                             config.extent.height as i32,
                         );
-                        wl_window = Some(window);
+                        wl_window = Some(window.cast());
                         window.cast()
                     }
                     #[cfg(Emscripten)]
@@ -1420,10 +1613,11 @@ impl crate::Surface for Surface {
                 .destroy_surface(self.egl.display, surface)
                 .unwrap();
             if let Some(window) = wl_window {
+                #[cfg(unix)]
                 wayland_sys::ffi_dispatch!(
                     wayland_sys::egl::wayland_egl_handle(),
                     wl_egl_window_destroy,
-                    window,
+                    window.cast(),
                 );
             }
         }
